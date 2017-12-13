@@ -7,6 +7,18 @@ import argparse
 import psutil
 import socket
 
+red_c = '\x1b[0;31m'
+blue_c = '\x1b[0;34m'
+cyan_c = '\x1b[0;36m'
+green_c = '\x1b[0;32m'
+yellow_c = '\x1b[0;33m'
+magenta_c = '\x1b[0;35m'
+red_cb = '\x1b[1;31m'
+blue_cb = '\x1b[1;34m'
+cyan_cb = '\x1b[1;36m'
+green_cb = '\x1b[1;32m'
+yellow_cb = '\x1b[1;33m'
+magenta_cb = '\x1b[1;35m'
 
 def owner(pid):
     try:
@@ -29,7 +41,7 @@ def get_status():
     stdout, stderr = proc.communicate()
 
     gpu_info_cmd = ['nvidia-smi',
-                    '--query-gpu=index,memory.total,memory.used,memory.free,utilization.gpu',
+                    '--query-gpu=index,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu',
                     '--format=csv,noheader']
 
     proc = sp.Popen(gpu_info_cmd, stdout=sp.PIPE, stderr=sp.PIPE)
@@ -40,7 +52,8 @@ def get_status():
                   'mem_total': x[1],
                   'mem_used': x[2],
                   'mem_free': x[3],
-                  'gpu_util': x[4]}
+                  'gpu_util': x[4],
+                  'gpu_temp': x[5]}
                  for x in gpu_infos]
 
     e = xml.etree.ElementTree.fromstring(stdout)
@@ -50,12 +63,14 @@ def get_status():
         index = int(gpu_infos[id]['index'])
         utilization = gpu.find('utilization')
         gpu_util = utilization.find('gpu_util').text
+        gpu_temp = gpu_infos[id]['gpu_temp'].split()[0]
         mem_free = gpu_infos[id]['mem_free'].split()[0]
         mem_total = gpu_infos[id]['mem_total'].split()[0]
 
         gpu_stat['gpu_util'] = float(gpu_util.split()[0]) / 100
         gpu_stat['mem_free'] = int(mem_free)
         gpu_stat['mem_total'] = int(mem_total)
+        gpu_stat['gpu_temp'] = int(gpu_temp)
 
         gpu_procs = []
         procs = gpu.find('processes')
@@ -80,31 +95,65 @@ def get_status():
 
     return status
 
+def get_color_memory(value, max_value=1.0):
+    perc = 100 * (float(value) / max_value)
+    if perc > 95:
+        return green_cb
+    elif perc > 80:
+        return blue_cb
+    elif perc > 40:
+        return yellow_cb
+    else:
+        return red_cb
 
 def pretty_print(status, verbose=False):
+    line_separator = '+-----+------+--------------------+----------+'
+    print(line_separator)
+    print('| GPU | TEMP |    Memory-Usage    | GPU-Util |')
+    print('|=====+======+====================+==========|')
     for id, stats in status.iteritems():
-        mem_free = stats['mem_free']
         color_out = '\x1b[0m'
-        color_in = color_out
-        if mem_free > 10000:
-            color_in = '\x1b[0;32m'
-        elif mem_free > 5000:
-            color_in = '\x1b[0;36m'
 
-        header = 'gpu {}: {}%, freeMEM {}{}{}/{} MiB'.format(id,
-                                                             int(100*stats['gpu_util']),
-                                                             color_in,
-                                                             stats['mem_free'],
+        # GPU Memory
+        mem_free = stats['mem_free']
+        mem_total = stats['mem_total']
+        mem_color = get_color_memory(mem_free, mem_total)
+
+        # GPU Proc
+        gpu_util = stats['gpu_util']
+        gpu_color = get_color_memory(1.0 - gpu_util)
+
+        # GPU Temp
+        temp = stats['gpu_temp']
+
+        header = '| {:2d}  | {:3d}C | {}{:6d}{} /{:6d} MiB | {}{:7d}{}% |'.format(id,
+                                                             temp,
+                                                             mem_color,
+                                                             mem_free,
                                                              color_out,
-                                                             stats['mem_total'])
+                                                             mem_total,
+                                                             gpu_color,
+                                                             int(100*gpu_util),
+                                                             color_out)
         print header
-        print ('-'*len(header))
+        print(line_separator)
+
+    line_separator = '+-----+---------------------+----------------+'
+    print('')
+    print(line_separator)
+    print('| GPU |    PROCESS OWNER    |     MEMORY     |')
+    print('|=====+=====================+================|')
+    for id, stats in status.iteritems():
+        if len(stats['proc']) == 0:
+            continue
         for proc in stats['proc']:
-            line = '{} - {} MiB'.format(proc['user'], proc['mem'])
+            line = '| {:2d}  | {:19s} | {:10} MiB |'.format(id, proc['user'], proc['mem'])
             print(line)
             if verbose:
                 print(proc['command'])
                 print('')
+    print(line_separator)
+
 
 
 if __name__ == '__main__':
